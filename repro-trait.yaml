@@ -1,0 +1,17 @@
+apiVersion: core.oam.dev/v1beta1
+kind: TraitDefinition
+metadata:
+  name: configmap-trait
+  namespace: vela-system
+spec:
+  podDisruptive: true
+  schematic:
+    cue:
+      template: |
+        outputs: cm: {
+          apiVersion: "v1"
+          kind: "ConfigMap"
+          metadata: name: context.name + "-cm"
+          data: parameter.data
+        }
+        parameter: data: [string]: string

@@ -1,0 +1,8 @@
+apiVersion: core.oam.dev/v1beta1
+kind: WorkloadDefinition
+metadata:
+  name: webservice
+  namespace: vela-system
+spec:
+  definitionRef:
+    name: deployments.apps

@@ -1887,21 +1887,8 @@ func TestPropagatePodDisruptiveHash(t *testing.T) {
 		assert.True(t, found)
 		assert.NotEmpty(t, annotations[podRestartHashAnnotationPrefix+"configmap-trait"])
 	})
-	t.Run("trait type with hashed suffix resolves to base TraitDefinition name", func(t *testing.T) {
-		workload := deploymentWithTemplate()
-		trait := configMapTrait("value1")
-		trait.SetLabels(map[string]string{oam.TraitTypeLabel: "configmap-trait-abc123"})
 
-		err := af.propagatePodDisruptiveHash(workload, trait)
-		assert.NoError(t, err)
-
-		annotations, found, err := unstructured.NestedStringMap(workload.Object, "spec", "template", "metadata", "annotations")
-		assert.NoError(t, err)
-		assert.True(t, found)
-		assert.NotEmpty(t, annotations[podRestartHashAnnotationPrefix+"configmap-trait"])
-	})
-
-	t.Run("long trait type names never produce an annotation key over 63 characters", func(t *testing.T) {
+	t.Run("long trait type names never produce an annotation name segment over 63 characters", func(t *testing.T) {
 		longType := "a-very-long-custom-trait-type-name-that-goes-well-past-the-limit"
 		afLong := &Appfile{
 			RelatedTraitDefinitions: map[string]*v1beta1.TraitDefinition{
@@ -1923,7 +1910,11 @@ func TestPropagatePodDisruptiveHash(t *testing.T) {
 		for k := range annotations {
 			key = k
 		}
-		assert.LessOrEqual(t, len(key), 63, "annotation key name segment must never exceed the Kubernetes 63-character limit")
+		nameSegment := key[strings.LastIndex(key, "/")+1:]
+		assert.LessOrEqual(t, len(nameSegment), maxAnnotationNameSegmentLength,
+			"annotation key name segment must never exceed the Kubernetes 63-character limit")
+		assert.NotEqual(t, podRestartHashAnnotationPrefix+longType, key,
+			"over-long trait types must use a hashed annotation key suffix")
 	})
 
 	t.Run("changing user-specified metadata (e.g. labels) on the trait still changes the hash", func(t *testing.T) {
@@ -1943,6 +1934,33 @@ func TestPropagatePodDisruptiveHash(t *testing.T) {
 		assert.NotEqual(t, hashBefore, hashAfter, "a user-specified metadata change must still change the restart hash")
 	})
 
+	t.Run("changing user-specified name or annotations on the trait still changes the hash", func(t *testing.T) {
+		workloadNameBefore := deploymentWithTemplate()
+		traitNameBefore := configMapTrait("value1")
+		traitNameBefore.SetName("cm-a")
+		assert.NoError(t, af.propagatePodDisruptiveHash(workloadNameBefore, traitNameBefore))
+		hashNameBefore := workloadNameBefore.Object["spec"].(map[string]interface{})["template"].(map[string]interface{})["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})[podRestartHashAnnotationPrefix+"configmap-trait"]
+
+		workloadNameAfter := deploymentWithTemplate()
+		traitNameAfter := configMapTrait("value1")
+		traitNameAfter.SetName("cm-b")
+		assert.NoError(t, af.propagatePodDisruptiveHash(workloadNameAfter, traitNameAfter))
+		hashNameAfter := workloadNameAfter.Object["spec"].(map[string]interface{})["template"].(map[string]interface{})["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})[podRestartHashAnnotationPrefix+"configmap-trait"]
+		assert.NotEqual(t, hashNameBefore, hashNameAfter, "a user-specified name change must change the restart hash")
+
+		workloadAnnotBefore := deploymentWithTemplate()
+		traitAnnotBefore := configMapTrait("value1")
+		assert.NoError(t, af.propagatePodDisruptiveHash(workloadAnnotBefore, traitAnnotBefore))
+		hashAnnotBefore := workloadAnnotBefore.Object["spec"].(map[string]interface{})["template"].(map[string]interface{})["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})[podRestartHashAnnotationPrefix+"configmap-trait"]
+
+		workloadAnnotAfter := deploymentWithTemplate()
+		traitAnnotAfter := configMapTrait("value1")
+		traitAnnotAfter.SetAnnotations(map[string]string{"config.kubernetes.io/local-config": "true"})
+		assert.NoError(t, af.propagatePodDisruptiveHash(workloadAnnotAfter, traitAnnotAfter))
+		hashAnnotAfter := workloadAnnotAfter.Object["spec"].(map[string]interface{})["template"].(map[string]interface{})["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})[podRestartHashAnnotationPrefix+"configmap-trait"]
+		assert.NotEqual(t, hashAnnotBefore, hashAnnotAfter, "a user-specified annotation change must change the restart hash")
+	})
+
 	t.Run("controller-injected metadata churn (resourceVersion) does not change the hash", func(t *testing.T) {
 		workloadBefore := deploymentWithTemplate()
 		traitBefore := configMapTrait("value1")
@@ -1956,5 +1974,27 @@ func TestPropagatePodDisruptiveHash(t *testing.T) {
 		hashAfter := workloadAfter.Object["spec"].(map[string]interface{})["template"].(map[string]interface{})["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})[podRestartHashAnnotationPrefix+"configmap-trait"]
 
 		assert.Equal(t, hashBefore, hashAfter, "controller-injected metadata churn must not cause a spurious restart")
+	})
+
+	t.Run("app revision label churn does not change the hash", func(t *testing.T) {
+		workloadBefore := deploymentWithTemplate()
+		traitBefore := configMapTrait("value1")
+		traitBefore.SetLabels(map[string]string{
+			oam.TraitTypeLabel:   "configmap-trait",
+			oam.LabelAppRevision: "myapp-v1",
+		})
+		assert.NoError(t, af.propagatePodDisruptiveHash(workloadBefore, traitBefore))
+		hashBefore := workloadBefore.Object["spec"].(map[string]interface{})["template"].(map[string]interface{})["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})[podRestartHashAnnotationPrefix+"configmap-trait"]
+
+		workloadAfter := deploymentWithTemplate()
+		traitAfter := configMapTrait("value1")
+		traitAfter.SetLabels(map[string]string{
+			oam.TraitTypeLabel:   "configmap-trait",
+			oam.LabelAppRevision: "myapp-v2",
+		})
+		assert.NoError(t, af.propagatePodDisruptiveHash(workloadAfter, traitAfter))
+		hashAfter := workloadAfter.Object["spec"].(map[string]interface{})["template"].(map[string]interface{})["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})[podRestartHashAnnotationPrefix+"configmap-trait"]
+
+		assert.Equal(t, hashBefore, hashAfter, "OAM app-revision label churn must not cause a spurious restart")
 	})
 }
