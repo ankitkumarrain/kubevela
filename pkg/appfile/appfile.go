@@ -373,33 +373,19 @@ func (af *Appfile) SetOAMContract(comp *types.ComponentManifest) error {
 	return nil
 }
 
-// podRestartHashAnnotationPrefix is the annotation key prefix written onto
-// workload pod templates for podDisruptive traits.
-// Full key form: app.oam.dev/trait-restart-hash-<traitType>
 const podRestartHashAnnotationPrefix = "app.oam.dev/trait-restart-hash-"
 
-// maxAnnotationNameSegmentLength is the Kubernetes limit on the name segment of
-// an annotation key (the part after the last "/"). See
-// https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
-const maxAnnotationNameSegmentLength = 63
+const maxAnnotationKeyNameLength = 63
 
-// podRestartHashAnnotationKey builds a Kubernetes-valid annotation key for the
-// given trait type. The name segment after "app.oam.dev/" must be <= 63 chars;
-// long trait type names are replaced with a short hash of the type.
 func podRestartHashAnnotationKey(lookupType string) string {
 	key := podRestartHashAnnotationPrefix + lookupType
-	nameSegment := key[strings.LastIndex(key, "/")+1:]
-	if len(nameSegment) <= maxAnnotationNameSegmentLength {
+	if len(key) <= maxAnnotationKeyNameLength {
 		return key
 	}
 	sum := sha256.Sum256([]byte(lookupType))
 	return podRestartHashAnnotationPrefix + hex.EncodeToString(sum[:])[:16]
 }
 
-// propagatePodDisruptiveHash stamps a content hash of a podDisruptive trait onto
-// the workload's pod template annotations. Changing the trait's rendered content
-// (including user metadata on outputs-based traits) changes the hash and causes
-// the owning controller to roll pods.
 func (af *Appfile) propagatePodDisruptiveHash(workload *unstructured.Unstructured, trait *unstructured.Unstructured) error {
 	traitType := trait.GetLabels()[oam.TraitTypeLabel]
 	if traitType == "" || traitType == definition.AuxiliaryWorkload {
@@ -441,11 +427,6 @@ func (af *Appfile) propagatePodDisruptiveHash(workload *unstructured.Unstructure
 	return unstructured.SetNestedStringMap(workload.UnstructuredContent(), templateAnnotations, "spec", "template", "metadata", "annotations")
 }
 
-// oamInjectedMetadataFields are volatile / controller-injected metadata paths
-// excluded from the trait content hash. User-specified metadata (name, labels,
-// annotations, etc.) is intentionally kept so meaningful changes still roll pods.
-// Mirrors the GenTraitName approach of stripping only revision-related labels,
-// plus Kubernetes server-injected fields that churn on every apply.
 var oamInjectedMetadataFields = [][]string{
 	{"resourceVersion"},
 	{"uid"},
@@ -457,9 +438,6 @@ var oamInjectedMetadataFields = [][]string{
 	{"labels", oam.LabelAppRevisionHash},
 }
 
-// computeTraitContentHash hashes a trait's rendered object for pod restart
-// detection. Status and controller/OAM-injected metadata are stripped so app
-// revision churn does not cause spurious restarts; user metadata is retained.
 func computeTraitContentHash(trait *unstructured.Unstructured) (string, error) {
 	cp := trait.DeepCopy()
 	for _, field := range oamInjectedMetadataFields {
