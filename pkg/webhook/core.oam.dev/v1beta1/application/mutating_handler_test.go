@@ -57,6 +57,30 @@ var _ = Describe("Test Application Mutator", func() {
 		Expect(resp.Allowed).Should(BeTrue())
 		Expect(resp.Patches).Should(BeNil())
 	})
+	It("Test Application Mutator [strips forged identity annotations when authentication disabled, regression for #7139]", func() {
+		Expect(utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=false", features.AuthenticateApplication))).Should(Succeed())
+		req := admission.Request{
+			AdmissionRequest: admissionv1.AdmissionRequest{
+				Operation: admissionv1.Create,
+				Resource:  metav1.GroupVersionResource{Group: v1beta1.Group, Version: v1beta1.Version, Resource: "applications"},
+				Object:    runtime.RawExtension{Raw: []byte(`{"apiVersion":"core.oam.dev/v1beta1","kind":"Application","metadata":{"name":"example","annotations":{"app.oam.dev/group":"system:masters","app.oam.dev/username":"forged-admin","app.oam.dev/service-account-name":"forged-sa"}}}`)},
+			},
+		}
+		resp := mutatingHandler.Handle(ctx, req)
+		Expect(resp.Allowed).Should(BeTrue())
+		Expect(resp.Patches).Should(ContainElement(jsonpatch.JsonPatchOperation{
+			Operation: "remove",
+			Path:      "/metadata/annotations/app.oam.dev~1group",
+		}))
+		Expect(resp.Patches).Should(ContainElement(jsonpatch.JsonPatchOperation{
+			Operation: "remove",
+			Path:      "/metadata/annotations/app.oam.dev~1username",
+		}))
+		Expect(resp.Patches).Should(ContainElement(jsonpatch.JsonPatchOperation{
+			Operation: "remove",
+			Path:      "/metadata/annotations/app.oam.dev~1service-account-name",
+		}))
+	})
 
 	It("Test Application Mutator [ignore authentication]", func() {
 		Expect(utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=true", features.AuthenticateApplication))).Should(Succeed())
